@@ -11,14 +11,14 @@ Security incident management API for SOC teams. BuildLab Cohort 4, Backend Devel
 ## Run it (clean machine, Node.js 22 or later)
 
 ```bash
-git clone <this-repo> && cd sentineldesk
+git clone https://github.com/5LIM3/sentineldesk.git && cd sentineldesk
 npm install
 cp .env.example .env
 npm run seed      # runs migrations, adds dummy data (only if the database is empty)
 npm run dev       # http://localhost:3000
 ```
 
-On Windows, if npm install fails with a node-gyp error, run npm install --ignore-scripts
+On Windows, if `npm install` fails with a node-gyp error, run `npm install --ignore-scripts`.
 
 Production build: `npm run build && npm start`. Type check: `npm run typecheck`. Tests arrive in Week 3.
 
@@ -69,7 +69,7 @@ The table lives in code at `src/status.ts`, so each rule can be tested. Status c
 
 SQLite is a file. If the host wipes the file system, the data is gone. **The seed script is not a safeguard**: it only creates initial demo data when the database is empty, and it cannot bring back records people created after seeding. Persistence needs a persistent disk or volume, mounted and used as the database location (`DB_PATH` must point inside it).
 
-Checked against the providers' docs on 12 Oct 2026 (re-check before deploying, plans change):
+Provider notes from their docs (not yet tested; re-check and test persistence before deploying, plans change):
 
 | Host | Persistent storage |
 |---|---|
