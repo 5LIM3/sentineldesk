@@ -4,7 +4,7 @@ Security incident management API for SOC teams. BuildLab Cohort 4, Backend Devel
 
 **Problem:** incidents get lost between shifts. SentinelDesk keeps one record of each incident: who owns it, what was investigated and what changed.
 
-**Stack:** Node.js, Express, TypeScript, SQLite (better-sqlite3), Zod. Week 2 adds bcrypt + JWT auth, Week 3 adds Jest + Supertest.
+**Stack:** Node.js, Express, TypeScript, SQLite (better-sqlite3), Zod, Jest + Supertest. Week 2 adds bcrypt + JWT auth.
 
 > **Week 1 has no authentication.** `created_by` (incidents) and `author_id` (updates) are sent in the request body as a **temporary development stand-in**. They are only checked for "this user exists" and are never a trusted identity: anyone can send any user id. Week 2 removes both fields and reads the user from the verified JWT. Use dummy data only and do not expose this build publicly.
 
@@ -20,9 +20,34 @@ npm run dev       # http://localhost:3000
 
 On Windows, if `npm install` fails with a node-gyp error, run `npm install --ignore-scripts`.
 
-Production build: `npm run build && npm start`. Type check: `npm run typecheck`. Tests arrive in Week 3.
+Production build: `npm run build && npm start`. Type check: `npm run typecheck`.
 
-Sample requests: [`requests.http`](requests.http) (VS Code REST Client) or the curl examples below.
+## Tests
+
+```bash
+npm test
+```
+
+Jest + Supertest, each test on a fresh in-memory database. Covered: foreign keys on for every connection, `ON DELETE CASCADE` (deleting an incident deletes its updates), `RESTRICT` on users who authored history, CRUD and status codes, validation errors, status rules, all-or-nothing status changes and history order. Authentication and authorisation tests arrive with auth in Week 2.
+
+## Endpoints
+
+| Method | Path | Success |
+|---|---|---|
+| GET | `/health` | 200 |
+| POST | `/api/incidents` | 201 |
+| GET | `/api/incidents` (filters: `status`, `severity`, `assigned_to`; `page`, `limit`) | 200 |
+| GET | `/api/incidents/:id` | 200 |
+| PATCH | `/api/incidents/:id` (title, description, severity, assigned_to; not status) | 200 |
+| DELETE | `/api/incidents/:id` (also deletes its updates) | 204 |
+| POST | `/api/incidents/:id/updates` (note, optional `new_status`) | 201 |
+| GET | `/api/incidents/:id/updates` (oldest first) | 200 |
+
+Errors: `400` validation or bad id, `404` not found, `409` invalid status move. Full details in [`docs/api-spec.md`](docs/api-spec.md).
+
+## Sample requests
+
+[`requests.http`](requests.http) (VS Code REST Client) or the curl examples below.
 
 ```bash
 curl "http://localhost:3000/api/incidents?severity=high"
@@ -36,6 +61,10 @@ curl -X POST http://localhost:3000/api/incidents/2/updates -H 'Content-Type: app
 
 curl "http://localhost:3000/api/incidents/2/updates"
 ```
+
+## Seed data
+
+`npm run seed` creates 3 dummy users (id 1 Ada Admin, id 2 Tunde Analyst, id 3 Chioma Analyst), 4 incidents and 6 updates. It does nothing if the database already has users. To start over, stop the server, delete the files in `data/` that end in `.db`, `.db-shm` or `.db-wal`, and run `npm run seed` again.
 
 ## Incident statuses
 
@@ -77,7 +106,16 @@ Provider notes from their docs (not yet tested; re-check and test persistence be
 | Fly.io | Volumes cost $0.15/GB/month; the pricing page lists no free compute tier. |
 | Railway | Volumes exist on Free and Trial (0.5 GB default). The docs I read do not say what happens to volume data when a trial ends, so confirm before relying on it. |
 
-Decision rule for Week 3: pick a host, confirm the disk is available on the plan, mount it, set `DB_PATH` inside it, create a record, redeploy, and confirm the record survived. If no persistent disk can be had, the deployed instance is labelled a **disposable demo** here and a run guide is the primary deliverable. Free hosts also sleep when idle, so the first request after a pause can be slow.
+Decision rule before deploying: pick a host, confirm the disk is available on the plan, mount it, set `DB_PATH` inside it, create a record, redeploy, and confirm the record survived. If no persistent disk can be had, the deployed instance is labelled a **disposable demo** here and a run guide is the primary deliverable. Free hosts also sleep when idle, so the first request after a pause can be slow.
+
+## Known limitations (Week 1)
+
+- **No authentication.** `created_by` and `author_id` come from the request body and are not a trusted identity. Do not expose this build publicly.
+- **No roles enforced.** The `admin` and `analyst` roles exist in the data, but any caller can create, change or delete incidents.
+- **No rate limiting and no CORS policy** yet.
+- **Not deployed.** Run it locally using the steps above.
+- **SQLite needs a persistent disk** when hosted (see Hosting above).
+- Users cannot be created through the API yet; the seed script provides the dummy users.
 
 ## Week 1 status
 
@@ -87,8 +125,9 @@ Decision rule for Week 3: pick a host, confirm the disk is available on the plan
 | Schema, migrations, seed data | `src/db.ts`, `src/seed.ts` |
 | Incident CRUD, validation | `src/routes/incidents.ts`, `src/validation.ts` |
 | Investigation history, transactional status changes | `POST` / `GET /api/incidents/:id/updates` |
+| Automated tests | `tests/` |
 | Auth, roles, replacing temporary user ids | Week 2 |
-| Tests, Swagger docs, deploy | Week 3 |
+| Swagger docs, full coverage note, rate limiting, deploy | Week 3 |
 
 ## Notes
 - All data is dummy. Seed users have an unusable placeholder password hash until bcrypt lands in Week 2.
