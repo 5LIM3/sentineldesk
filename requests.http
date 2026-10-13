@@ -1,0 +1,63 @@
+@base = http://localhost:3000
+
+### Health
+GET {{base}}/health
+
+### Create incident
+# TEMPORARY (Week 1): created_by is sent in the body because there is no auth yet.
+# It is not a trusted identity. Week 2 reads the user from the JWT.
+POST {{base}}/api/incidents
+Content-Type: application/json
+
+{ "title": "Suspicious DNS tunnelling", "description": "High volume TXT queries", "severity": "high", "created_by": 2, "assigned_to": 3 }
+
+### List (filters + pagination)
+GET {{base}}/api/incidents?status=investigating&severity=high&page=1&limit=10
+
+### Get one
+GET {{base}}/api/incidents/1
+
+### Update fields (status is NOT allowed here)
+PATCH {{base}}/api/incidents/2
+Content-Type: application/json
+
+{ "assigned_to": 2, "severity": "high" }
+
+### Add a note only
+POST {{base}}/api/incidents/2/updates
+Content-Type: application/json
+
+{ "author_id": 2, "note": "Reached out to the finance user for the original email." }
+
+### Change status (records previous_status -> new_status, one transaction)
+POST {{base}}/api/incidents/2/updates
+Content-Type: application/json
+
+{ "author_id": 2, "note": "Link detonated in sandbox, credential harvester confirmed.", "new_status": "investigating" }
+
+### History, oldest first
+GET {{base}}/api/incidents/2/updates
+
+### Delete (its updates are deleted with it)
+DELETE {{base}}/api/incidents/4
+
+### ERROR: validation (400)
+POST {{base}}/api/incidents
+Content-Type: application/json
+
+{ "title": "x", "severity": "nope" }
+
+### ERROR: status via PATCH (400 STATUS_VIA_UPDATES)
+PATCH {{base}}/api/incidents/2
+Content-Type: application/json
+
+{ "status": "closed" }
+
+### ERROR: not allowed transition, open -> resolved (409)
+POST {{base}}/api/incidents/2/updates
+Content-Type: application/json
+
+{ "author_id": 2, "note": "Skipping ahead", "new_status": "resolved" }
+
+### ERROR: unknown incident (404)
+GET {{base}}/api/incidents/999
