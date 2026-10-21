@@ -1,4 +1,5 @@
-import { Router } from "express";
+import { Router, type RequestHandler } from "express";
+import { canModifyIncident, requireAdmin, type AuthUser } from "../auth.js";
 import type { DB } from "../db.js";
 import { AppError } from "../errors.js";
 import { STATUS_TRANSITIONS, canTransition, type Status } from "../status.js";
@@ -12,11 +13,15 @@ import {
 } from "../validation.js";
 
 type Incident = Record<string, unknown>;
+type Ownership = { created_by: number; assigned_to: number | null };
 
 const NOW = "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 
-export function incidentsRouter(db: DB): Router {
+export function incidentsRouter(db: DB, requireAuth: RequestHandler): Router {
   const router = Router();
+
+  // Every incident route needs a logged-in user. Who may CHANGE what is decided per route below.
+  router.use(requireAuth);
 
   const userExists = (userId: number) => !!db.prepare("SELECT 1 FROM users WHERE id = ?").get(userId);
   const getIncident = (incidentId: number) =>
@@ -24,8 +29,11 @@ export function incidentsRouter(db: DB): Router {
   const notFound = (incidentId: number) =>
     new AppError(404, "INCIDENT_NOT_FOUND", `Incident ${incidentId} not found`);
 
-  // Week 1: user ids arrive in the request body (see validation.ts). They are checked for
-  // existence only. That is NOT authentication.
+  const forbidden = () =>
+    new AppError(403, "FORBIDDEN", "You can only change incidents you created or are assigned to (admins can change any)");
+
+  // `assigned_to` is the one user id still accepted from the body (assigning someone else), so
+  // it must point at a real user.
   const assertUser = (userId: number | null | undefined, field: string) => {
     if (userId != null && !userExists(userId)) {
       throw new AppError(400, "INVALID_REFERENCE", `${field} ${userId} does not match an existing user`);
@@ -36,14 +44,14 @@ export function incidentsRouter(db: DB): Router {
 
   router.post("/", (req, res) => {
     const body = createIncidentSchema.parse(req.body);
-    assertUser(body.created_by, "created_by");
+    const user = req.user as AuthUser; // the creator is the logged-in user, never the request body
     assertUser(body.assigned_to, "assigned_to");
     const result = db
       .prepare(
         `INSERT INTO incidents (title, description, severity, created_by, assigned_to)
          VALUES (?, ?, ?, ?, ?)`
       )
-      .run(body.title, body.description, body.severity, body.created_by, body.assigned_to ?? null);
+      .run(body.title, body.description, body.severity, user.id, body.assigned_to ?? null);
     res.status(201).json(getIncident(Number(result.lastInsertRowid)));
   });
 
@@ -86,7 +94,16 @@ export function incidentsRouter(db: DB): Router {
       );
     }
     const body = updateIncidentSchema.parse(req.body);
-    if (!getIncident(id)) throw notFound(id);
+    const user = req.user as AuthUser;
+    const current = getIncident(id) as (Incident & Ownership) | undefined;
+    if (!current) throw notFound(id);
+
+    // Ownership check: admin, creator or assignee may edit. One extra rule so unassigned work can
+    // be picked up: any analyst may assign an UNASSIGNED incident to themselves (and nothing else).
+    const isClaim =
+      Object.keys(body).length === 1 && body.assigned_to === user.id && current.assigned_to === null;
+    if (!canModifyIncident(user, current) && !isClaim) throw forbidden();
+
     assertUser(body.assigned_to, "assigned_to");
 
     // Column names come from the strict Zod schema (a fixed whitelist), never from raw user input.
@@ -99,8 +116,8 @@ export function incidentsRouter(db: DB): Router {
 
   // Deleting an incident also deletes its updates: ON DELETE CASCADE in the schema, which only
   // works because openDb() turns foreign key enforcement on for every connection.
-  // Admin-only from Week 2.
-  router.delete("/:id", (req, res) => {
+  // Admin only: analysts get 403.
+  router.delete("/:id", requireAdmin, (req, res) => {
     const { id } = idParamSchema.parse(req.params);
     const result = db.prepare("DELETE FROM incidents WHERE id = ?").run(id);
     if (result.changes === 0) throw notFound(id);
@@ -114,16 +131,17 @@ export function incidentsRouter(db: DB): Router {
   router.post("/:id/updates", (req, res) => {
     const { id } = idParamSchema.parse(req.params);
     const body = createUpdateSchema.parse(req.body);
+    const user = req.user as AuthUser; // the author is the logged-in user, never the request body
 
     const created = db
       .transaction(() => {
         // Read inside the transaction (IMMEDIATE below takes the write lock first), so the
         // previous_status we record is the status we actually changed from.
-        const incident = db.prepare("SELECT id, status FROM incidents WHERE id = ?").get(id) as
-          | { id: number; status: Status }
-          | undefined;
+        const incident = db
+          .prepare("SELECT id, status, created_by, assigned_to FROM incidents WHERE id = ?")
+          .get(id) as ({ id: number; status: Status } & Ownership) | undefined;
         if (!incident) throw notFound(id);
-        assertUser(body.author_id, "author_id");
+        if (!canModifyIncident(user, incident)) throw forbidden();
 
         let previous: Status | null = null;
         let next: Status | null = null;
@@ -147,7 +165,7 @@ export function incidentsRouter(db: DB): Router {
             `INSERT INTO incident_updates (incident_id, author_id, note, previous_status, new_status)
              VALUES (?, ?, ?, ?, ?)`
           )
-          .run(id, body.author_id, body.note, previous, next);
+          .run(id, user.id, body.note, previous, next);
 
         // Any activity bumps updated_at; a status change also moves the incident to the new status.
         if (next) {
