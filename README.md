@@ -4,9 +4,9 @@ Security incident management API for SOC teams. BuildLab Cohort 4, Backend Devel
 
 **Problem:** incidents get lost between shifts. SentinelDesk keeps one record of each incident: who owns it, what was investigated and what changed.
 
-**Stack:** Node.js, Express, TypeScript, SQLite (better-sqlite3), Zod, Jest + Supertest. Week 2 adds bcrypt + JWT auth.
+**Stack:** Node.js, Express, TypeScript, SQLite (better-sqlite3), Zod, bcrypt (bcryptjs), JWT, Jest + Supertest.
 
-> **Week 1 has no authentication.** `created_by` (incidents) and `author_id` (updates) are sent in the request body as a **temporary development stand-in**. They are only checked for "this user exists" and are never a trusted identity: anyone can send any user id. Week 2 removes both fields and reads the user from the verified JWT. Use dummy data only and do not expose this build publicly.
+> **Authentication (Week 2).** Register or log in to get a JWT, then send `Authorization: Bearer <token>` on every incident route. The creator and author of records are the logged-in user, never fields in the request body. Analysts can change only incidents they created or are assigned to, and only admins can delete. Use dummy data only.
 
 ## Run it (clean machine, Node.js 22 or later)
 
@@ -14,6 +14,8 @@ Security incident management API for SOC teams. BuildLab Cohort 4, Backend Devel
 git clone https://github.com/5LIM3/sentineldesk.git && cd sentineldesk
 npm install
 cp .env.example .env
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"   # prints a secret
+# open .env and paste it after JWT_SECRET=   (the server will not start without it)
 npm run seed      # runs migrations, adds dummy data (only if the database is empty)
 npm run dev       # http://localhost:3000
 ```
@@ -28,43 +30,66 @@ Production build: `npm run build && npm start`. Type check: `npm run typecheck`.
 npm test
 ```
 
-Jest + Supertest, each test on a fresh in-memory database. Covered: foreign keys on for every connection, `ON DELETE CASCADE` (deleting an incident deletes its updates), `RESTRICT` on users who authored history, CRUD and status codes, validation errors, status rules, all-or-nothing status changes and history order. Authentication and authorisation tests arrive with auth in Week 2.
+Jest + Supertest, each test on a fresh in-memory database (no `.env` needed). Covered:
+
+- **Integrity:** foreign keys on for every connection, `ON DELETE CASCADE` (deleting an incident deletes its updates), `RESTRICT` on users who authored history.
+- **CRUD and rules:** status codes, validation errors, status transitions, all-or-nothing status changes, history order.
+- **Authentication:** register (hashing, duplicate and invalid input, no role escalation), login (same error for wrong password and unknown email), missing, malformed, forged, expired and unknown-user tokens, `401` on every protected route.
+- **Authorisation:** identity comes from the token, creator / assignee / admin may change an incident while other analysts get `403`, claiming an unassigned incident, delete is admin only.
 
 ## Endpoints
 
-| Method | Path | Success |
-|---|---|---|
-| GET | `/health` | 200 |
-| POST | `/api/incidents` | 201 |
-| GET | `/api/incidents` (filters: `status`, `severity`, `assigned_to`; `page`, `limit`) | 200 |
-| GET | `/api/incidents/:id` | 200 |
-| PATCH | `/api/incidents/:id` (title, description, severity, assigned_to; not status) | 200 |
-| DELETE | `/api/incidents/:id` (also deletes its updates) | 204 |
-| POST | `/api/incidents/:id/updates` (note, optional `new_status`) | 201 |
-| GET | `/api/incidents/:id/updates` (oldest first) | 200 |
+| Method | Path | Access | Success |
+|---|---|---|---|
+| GET | `/health` | public | 200 |
+| POST | `/api/auth/register` | public | 201 |
+| POST | `/api/auth/login` | public | 200 |
+| GET | `/api/auth/me` | logged in | 200 |
+| POST | `/api/incidents` | logged in | 201 |
+| GET | `/api/incidents` (filters: `status`, `severity`, `assigned_to`; `page`, `limit`) | logged in | 200 |
+| GET | `/api/incidents/:id` | logged in | 200 |
+| PATCH | `/api/incidents/:id` (title, description, severity, assigned_to; not status) | admin, creator or assignee | 200 |
+| DELETE | `/api/incidents/:id` (also deletes its updates) | admin only | 204 |
+| POST | `/api/incidents/:id/updates` (note, optional `new_status`) | admin, creator or assignee | 201 |
+| GET | `/api/incidents/:id/updates` (oldest first) | logged in | 200 |
 
-Errors: `400` validation or bad id, `404` not found, `409` invalid status move. Full details in [`docs/api-spec.md`](docs/api-spec.md).
+Errors: `400` validation or bad id, `401` not logged in or bad token, `403` not allowed, `404` not found, `409` duplicate email or invalid status move. Full details in [`docs/api-spec.md`](docs/api-spec.md).
+
+An analyst may also **claim** an unassigned incident by sending `PATCH { "assigned_to": <own id> }`. Nothing else can be changed in that request.
 
 ## Sample requests
 
 [`requests.http`](requests.http) (VS Code REST Client) or the curl examples below.
 
 ```bash
-curl "http://localhost:3000/api/incidents?severity=high"
+# log in (demo account from the seed data) and keep the token
+curl -X POST http://localhost:3000/api/auth/login -H 'Content-Type: application/json' \
+  -d '{"email":"tunde@example.com","password":"Password123!"}'
 
-curl -X POST http://localhost:3000/api/incidents -H 'Content-Type: application/json' \
-  -d '{"title":"Suspicious DNS tunnelling","description":"High volume TXT queries","severity":"high","created_by":2}'
+# use it on every other request
+curl "http://localhost:3000/api/incidents?severity=high" -H "Authorization: Bearer <token>"
 
-# change status through the history (records previous and new status)
-curl -X POST http://localhost:3000/api/incidents/2/updates -H 'Content-Type: application/json' \
-  -d '{"author_id":3,"note":"Picked up, checking the link in a sandbox.","new_status":"investigating"}'
+curl -X POST http://localhost:3000/api/incidents -H "Authorization: Bearer <token>" -H 'Content-Type: application/json' \
+  -d '{"title":"Suspicious DNS tunnelling","description":"High volume TXT queries","severity":"high"}'
 
-curl "http://localhost:3000/api/incidents/2/updates"
+# change status through the history (records previous and new status; the author is the logged-in user)
+curl -X POST http://localhost:3000/api/incidents/1/updates -H "Authorization: Bearer <token>" -H 'Content-Type: application/json' \
+  -d '{"note":"Host isolated, imaging disk.","new_status":"contained"}'
+
+curl "http://localhost:3000/api/incidents/1/updates" -H "Authorization: Bearer <token>"
 ```
 
 ## Seed data
 
-`npm run seed` creates 3 dummy users (id 1 Ada Admin, id 2 Tunde Analyst, id 3 Chioma Analyst), 4 incidents and 6 updates. It does nothing if the database already has users. To start over, stop the server, delete the files in `data/` that end in `.db`, `.db-shm` or `.db-wal`, and run `npm run seed` again.
+`npm run seed` creates 3 dummy users, 4 incidents and 6 updates. It does nothing if the database already has users. To start over, stop the server, delete the files in `data/` that end in `.db`, `.db-shm` or `.db-wal`, and run `npm run seed` again.
+
+| Id | Name | Email | Role |
+|---|---|---|---|
+| 1 | Ada Admin | ada@example.com | admin |
+| 2 | Tunde Analyst | tunde@example.com | analyst |
+| 3 | Chioma Analyst | chioma@example.com | analyst |
+
+All three share the dummy password `Password123!`. It exists only so the API can be tried out locally; it is not a real credential and must never be used for anything real. New accounts made with `POST /api/auth/register` are always analysts.
 
 ## Incident statuses
 
@@ -94,6 +119,14 @@ The table lives in code at `src/status.ts`, so each rule can be tested. Status c
 - Deleting an incident cascades to its updates (`ON DELETE CASCADE`). Users who authored history cannot be deleted (`RESTRICT`).
 - History is returned oldest first.
 
+## Security notes
+
+- Passwords are stored only as bcrypt hashes (`bcryptjs`, a pure JavaScript implementation, so it installs on Windows without a compiler). Passwords over 72 bytes are rejected because bcrypt ignores everything past that.
+- There is no default JWT secret. `JWT_SECRET` must be set in `.env` (at least 32 characters) or the server refuses to start. `.env` is git-ignored; only `.env.example` is committed.
+- Tokens use HS256 with the algorithm pinned on verification, expire after 1 hour, and the user and role are re-read from the database on every request.
+- Wrong password and unknown email return the same `401`, and the unknown-email path still does a hash comparison, so accounts cannot be guessed from the response or its timing.
+- The admin role cannot be requested through the API. Unknown fields (for example `role`, `created_by`, `author_id`) are rejected.
+
 ## Hosting and data persistence
 
 SQLite is a file. If the host wipes the file system, the data is gone. **The seed script is not a safeguard**: it only creates initial demo data when the database is empty, and it cannot bring back records people created after seeding. Persistence needs a persistent disk or volume, mounted and used as the database location (`DB_PATH` must point inside it).
@@ -108,16 +141,15 @@ Provider notes from their docs (not yet tested; re-check and test persistence be
 
 Decision rule before deploying: pick a host, confirm the disk is available on the plan, mount it, set `DB_PATH` inside it, create a record, redeploy, and confirm the record survived. If no persistent disk can be had, the deployed instance is labelled a **disposable demo** here and a run guide is the primary deliverable. Free hosts also sleep when idle, so the first request after a pause can be slow.
 
-## Known limitations (Week 1)
+## Known limitations (Week 2)
 
-- **No authentication.** `created_by` and `author_id` come from the request body and are not a trusted identity. Do not expose this build publicly.
-- **No roles enforced.** The `admin` and `analyst` roles exist in the data, but any caller can create, change or delete incidents.
-- **No rate limiting and no CORS policy** yet.
+- **No rate limiting and no CORS policy yet** (planned for Week 3), so login can currently be tried repeatedly.
+- **Tokens cannot be revoked before they expire.** There is no logout or refresh token; they simply expire after 1 hour.
+- **No user management API.** Roles cannot be changed through the API, and an admin account only comes from the seed script.
 - **Not deployed.** Run it locally using the steps above.
 - **SQLite needs a persistent disk** when hosted (see Hosting above).
-- Users cannot be created through the API yet; the seed script provides the dummy users.
 
-## Week 1 status
+## Status
 
 | Task | Where |
 |---|---|
@@ -125,10 +157,12 @@ Decision rule before deploying: pick a host, confirm the disk is available on th
 | Schema, migrations, seed data | `src/db.ts`, `src/seed.ts` |
 | Incident CRUD, validation | `src/routes/incidents.ts`, `src/validation.ts` |
 | Investigation history, transactional status changes | `POST` / `GET /api/incidents/:id/updates` |
+| Authentication (register, login, JWT) | `src/auth.ts`, `src/routes/auth.ts` |
+| Authorisation (roles, ownership, admin-only delete) | `src/auth.ts`, `src/routes/incidents.ts` |
 | Automated tests | `tests/` |
-| Auth, roles, replacing temporary user ids | Week 2 |
-| Swagger docs, full coverage note, rate limiting, deploy | Week 3 |
+| Issue log | [`docs/issue-log.md`](docs/issue-log.md) |
+| Swagger docs, full coverage note, rate limiting, CORS, deploy | Week 3 |
 
 ## Notes
-- All data is dummy. Seed users have an unusable placeholder password hash until bcrypt lands in Week 2.
+- All data is dummy.
 - Errors always use `{ "error": { "code", "message" } }`; stack traces are never sent to clients.

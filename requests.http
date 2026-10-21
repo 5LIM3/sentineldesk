@@ -1,63 +1,157 @@
 @base = http://localhost:3000
 
-### Health
+# Run these top to bottom on a freshly seeded database (npm run seed).
+# Log in first: the other requests use the tokens from the three login requests below.
+# Demo accounts (dummy data, password for all: Password123!):
+#   ada@example.com (admin)   tunde@example.com (analyst)   chioma@example.com (analyst)
+
+### Health (public)
 GET {{base}}/health
 
-### Create incident
-# TEMPORARY (Week 1): created_by is sent in the body because there is no auth yet.
-# It is not a trusted identity. Week 2 reads the user from the JWT.
-POST {{base}}/api/incidents
+### Log in as analyst Tunde
+# @name loginAnalyst
+POST {{base}}/api/auth/login
 Content-Type: application/json
 
-{ "title": "Suspicious DNS tunnelling", "description": "High volume TXT queries", "severity": "high", "created_by": 2, "assigned_to": 3 }
+{ "email": "tunde@example.com", "password": "Password123!" }
 
-### List (filters + pagination)
-GET {{base}}/api/incidents?status=investigating&severity=high&page=1&limit=10
+### Log in as analyst Chioma
+# @name loginOther
+POST {{base}}/api/auth/login
+Content-Type: application/json
+
+{ "email": "chioma@example.com", "password": "Password123!" }
+
+### Log in as admin Ada
+# @name loginAdmin
+POST {{base}}/api/auth/login
+Content-Type: application/json
+
+{ "email": "ada@example.com", "password": "Password123!" }
+
+### Who am I
+GET {{base}}/api/auth/me
+Authorization: Bearer {{loginAnalyst.response.body.token}}
+
+### ERROR: no token (401 UNAUTHENTICATED)
+GET {{base}}/api/incidents
+
+### ERROR: wrong password (401 INVALID_CREDENTIALS)
+POST {{base}}/api/auth/login
+Content-Type: application/json
+
+{ "email": "tunde@example.com", "password": "wrong-password" }
+
+### Register a new account (201, always an analyst). Send twice: the second is 409 EMAIL_TAKEN
+POST {{base}}/api/auth/register
+Content-Type: application/json
+
+{ "name": "Nia Demo", "email": "nia.demo@example.com", "password": "Password123!" }
+
+### ERROR: register trying to be an admin (400, role is not accepted)
+POST {{base}}/api/auth/register
+Content-Type: application/json
+
+{ "name": "Sneaky", "email": "sneaky@example.com", "password": "Password123!", "role": "admin" }
+
+### Create incident (the creator is the logged-in user, not a field)
+# @name created
+POST {{base}}/api/incidents
+Content-Type: application/json
+Authorization: Bearer {{loginAnalyst.response.body.token}}
+
+{ "title": "Suspicious DNS tunnelling", "description": "High volume TXT queries", "severity": "high" }
+
+### List (newest first, filters + pagination)
+GET {{base}}/api/incidents?limit=5
+Authorization: Bearer {{loginAnalyst.response.body.token}}
 
 ### Get one
-GET {{base}}/api/incidents/1
+GET {{base}}/api/incidents/{{created.response.body.id}}
+Authorization: Bearer {{loginAnalyst.response.body.token}}
 
-### Update fields (status is NOT allowed here)
-PATCH {{base}}/api/incidents/2
+### Update fields as the creator (200). Status is NOT allowed here
+PATCH {{base}}/api/incidents/{{created.response.body.id}}
 Content-Type: application/json
+Authorization: Bearer {{loginAnalyst.response.body.token}}
 
-{ "assigned_to": 2, "severity": "high" }
-
-### Add a note only
-POST {{base}}/api/incidents/2/updates
-Content-Type: application/json
-
-{ "author_id": 2, "note": "Reached out to the finance user for the original email." }
-
-### Change status (records previous_status -> new_status, one transaction)
-POST {{base}}/api/incidents/2/updates
-Content-Type: application/json
-
-{ "author_id": 2, "note": "Link detonated in sandbox, credential harvester confirmed.", "new_status": "investigating" }
-
-### History, oldest first
-GET {{base}}/api/incidents/2/updates
-
-### Delete (its updates are deleted with it)
-DELETE {{base}}/api/incidents/4
-
-### ERROR: validation (400)
-POST {{base}}/api/incidents
-Content-Type: application/json
-
-{ "title": "x", "severity": "nope" }
+{ "assigned_to": 2, "severity": "critical" }
 
 ### ERROR: status via PATCH (400 STATUS_VIA_UPDATES)
-PATCH {{base}}/api/incidents/2
+PATCH {{base}}/api/incidents/{{created.response.body.id}}
 Content-Type: application/json
+Authorization: Bearer {{loginAnalyst.response.body.token}}
 
 { "status": "closed" }
 
-### ERROR: not allowed transition, open -> resolved (409)
-POST {{base}}/api/incidents/2/updates
+### ERROR: another analyst may not change it (403 FORBIDDEN)
+PATCH {{base}}/api/incidents/{{created.response.body.id}}
 Content-Type: application/json
+Authorization: Bearer {{loginOther.response.body.token}}
 
-{ "author_id": 2, "note": "Skipping ahead", "new_status": "resolved" }
+{ "severity": "low" }
+
+### Claim an unassigned incident (200): Tunde takes incident 2, which nobody has
+PATCH {{base}}/api/incidents/2
+Content-Type: application/json
+Authorization: Bearer {{loginAnalyst.response.body.token}}
+
+{ "assigned_to": 2 }
+
+### ERROR: not yours, and already assigned (403): incident 3 belongs to the admin and Chioma
+PATCH {{base}}/api/incidents/3
+Content-Type: application/json
+Authorization: Bearer {{loginAnalyst.response.body.token}}
+
+{ "severity": "low" }
+
+### Add a note only (201, both statuses null)
+POST {{base}}/api/incidents/{{created.response.body.id}}/updates
+Content-Type: application/json
+Authorization: Bearer {{loginAnalyst.response.body.token}}
+
+{ "note": "Pulled DNS logs for the last 24 hours." }
+
+### ERROR: not allowed transition, open -> resolved (409). Run this BEFORE the next request
+POST {{base}}/api/incidents/{{created.response.body.id}}/updates
+Content-Type: application/json
+Authorization: Bearer {{loginAnalyst.response.body.token}}
+
+{ "note": "Skipping ahead", "new_status": "resolved" }
+
+### Change status (201, records previous_status -> new_status, one transaction, author = logged-in user)
+POST {{base}}/api/incidents/{{created.response.body.id}}/updates
+Content-Type: application/json
+Authorization: Bearer {{loginAnalyst.response.body.token}}
+
+{ "note": "Traffic confirmed as tunnelling, starting investigation.", "new_status": "investigating" }
+
+### History, oldest first
+GET {{base}}/api/incidents/{{created.response.body.id}}/updates
+Authorization: Bearer {{loginAnalyst.response.body.token}}
+
+### ERROR: validation (400 VALIDATION_ERROR)
+POST {{base}}/api/incidents
+Content-Type: application/json
+Authorization: Bearer {{loginAnalyst.response.body.token}}
+
+{ "title": "x", "severity": "nope" }
+
+### ERROR: trying to set the creator in the body (400, identity comes from the token)
+POST {{base}}/api/incidents
+Content-Type: application/json
+Authorization: Bearer {{loginAnalyst.response.body.token}}
+
+{ "title": "Spoofed creator", "description": "d", "severity": "low", "created_by": 3 }
 
 ### ERROR: unknown incident (404)
 GET {{base}}/api/incidents/999
+Authorization: Bearer {{loginAnalyst.response.body.token}}
+
+### ERROR: analysts cannot delete (403, even their own incident)
+DELETE {{base}}/api/incidents/{{created.response.body.id}}
+Authorization: Bearer {{loginAnalyst.response.body.token}}
+
+### Delete as admin (204, its updates are deleted with it)
+DELETE {{base}}/api/incidents/{{created.response.body.id}}
+Authorization: Bearer {{loginAdmin.response.body.token}}
