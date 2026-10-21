@@ -126,6 +126,7 @@ The table lives in code at `src/status.ts`, so each rule can be tested. Status c
 - Tokens use HS256 with the algorithm pinned on verification, expire after 1 hour, and the user and role are re-read from the database on every request.
 - Wrong password and unknown email return the same `401`, and the unknown-email path still does a hash comparison, so accounts cannot be guessed from the response or its timing.
 - The admin role cannot be requested through the API. Unknown fields (for example `role`, `created_by`, `author_id`) are rejected.
+- There is no logout or revocation list. A stolen token works until it expires (1 hour). Deleting the user or changing their role takes effect immediately, because the user is re-read on every request.
 
 ## Hosting and data persistence
 
@@ -148,6 +149,7 @@ Decision rule before deploying: pick a host, confirm the disk is available on th
 - **No user management API.** Roles cannot be changed through the API, and an admin account only comes from the seed script.
 - **Not deployed.** Run it locally using the steps above.
 - **SQLite needs a persistent disk** when hosted (see Hosting above).
+- **Team-wide read access.** Any logged-in user can read every incident and its history. This is deliberate: a small SOC team needs shared visibility for shift handover. There is no per-incident confidentiality. If one were needed (for example an HR or insider-threat case), the next step would be a `confidential` flag limiting reads to the creator, assignee and admins.
 
 ## Status
 
