@@ -73,11 +73,7 @@ npm start
 
 Run `npm start` after building. Use `npm run dev` for development.
 
-**Windows installation note:** if `npm install` fails, inspect the full
-error and Node.js/npm versions first. Do not use
-`npm install --ignore-scripts` as a generic fix: dependencies may need
-install-time scripts to prepare native modules. After any workaround,
-verify that `npm run seed` and the server start successfully.
+**Windows installation note:** if `npm install` fails with a node-gyp or "Visual Studio" error, run `npm install --ignore-scripts`. This worked in testing because `better-sqlite3` ships a prebuilt Windows binary. Afterwards, confirm `npm test` passes and `npm run seed` starts. For any other install error, read the full message and check your Node.js version first.
 
 ## Tests
 
@@ -146,6 +142,7 @@ pagination parameters: `page` and `limit`. `PATCH /api/incidents/:id`
 cannot change status directly. Submit status changes through
 `POST /api/incidents/:id/updates` so they are recorded in the history.
 
+An analyst may also **claim** an unassigned incident by sending `PATCH { "assigned_to": <own id> }`. Nothing else can be changed in that request.
 See [`docs/api-spec.md`](docs/api-spec.md) for details and
 [`requests.http`](requests.http) for sample requests (VS Code REST
 Client).
@@ -306,7 +303,7 @@ storage policies change.
 - **Tokens cannot be revoked before they expire.** There is no logout or refresh token; they simply expire after 1 hour.
 - **No user management API.** Roles cannot be changed through the API, and an admin account only comes from the seed script.
 - **Not deployed.** Run it locally using the steps above.
-- **SQLite needs a persistent disk** when hosted (see Hosting above).
+- **SQLite needs a persistent disk** when hosted (see "SQLite and deployment" above).
 
 ## Notes
 - All data is dummy.
