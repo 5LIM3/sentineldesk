@@ -9,21 +9,22 @@ and status history together.
 ## Stack
 
 Node.js, Express, TypeScript, SQLite (`better-sqlite3`), Zod,
-`bcryptjs`, JWT, Jest, and Supertest.
+`bcryptjs`, JWT, `helmet`, `cors`, `express-rate-limit`, Jest, and Supertest.
 
 > **Authentication (Week 2).** Register or log in to get a JWT, then send `Authorization: Bearer <token>` on every incident route. The creator and author of records are the logged-in user, never fields in the request body. Analysts can change only incidents they created or are assigned to, and only admins can delete. Use dummy data only.
 
 ## Status
 
--   **Implemented:** incident CRUD, JWT authentication, authorization,
-    validation, investigation history, status-transition rules, seed
-    data, and automated tests.
--   **Local verification reported:** 75 tests passed across 4 Jest
-    suites; `npm run typecheck` and `npm run build` completed
-    successfully.
--   **Not deployed:** use the local setup below to evaluate the API.
--   **Planned for Week 3:** rate limiting, CORS configuration, expanded
-    API documentation, and deployment.
+-   **Implemented:** incident CRUD, JWT authentication and authorization,
+    validation, investigation history, status-transition rules, seed data,
+    rate limiting on login and sign-up, a deliberate CORS allow list,
+    security headers, a list-order index, an OpenAPI file, and automated tests.
+-   **Local verification:** 108 tests passed across 5 Jest suites, with
+    98.7% statement and 94.6% branch coverage (`npm run test:coverage`);
+    `npm run typecheck` and `npm run build` completed successfully.
+-   **Not deployed:** use the local setup below (or Docker) to evaluate the
+    API. See [`docs/setup-guide.md`](docs/setup-guide.md).
+-   **Not built:** a web frontend. This project is the API only.
 
 ## Run locally
 
@@ -52,7 +53,9 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
 Copy the generated value into `JWT_SECRET` in `.env`. The secret must be
-at least 32 characters. Never commit `.env` or share its contents.
+at least 32 characters. Never commit `.env` or share its contents. Other
+settings (CORS, rate limits, proxy) are listed in
+[`docs/setup-guide.md`](docs/setup-guide.md).
 
 Then run:
 
@@ -78,12 +81,13 @@ Run `npm start` after building. Use `npm run dev` for development.
 ## Tests
 
 ``` bash
-npm test
+npm test                # all tests, one command, no .env needed
+npm run test:coverage   # with a coverage report
 ```
 
-The reported local result is **75 passing tests across 4 suites**. The
-suite uses Jest and Supertest with a fresh in-memory database for each
-test. Coverage includes:
+**108 passing tests across 5 suites**, with 98.7% statement and 94.6%
+branch coverage. The suite uses Jest and Supertest with a fresh in-memory
+database for each test. Coverage includes:
 
 -   **Database integrity:** foreign-key enforcement, cascade deletion of
     incident updates, and restrictions on deleting users who authored
@@ -96,9 +100,14 @@ test. Coverage includes:
 -   **Authorization:** identity from the token, creator/assignee/admin
     permissions, claiming an unassigned incident, and admin-only
     deletion.
+-   **Security and performance:** security headers, the CORS allow list,
+    rate limiting, SQL-looking input, oversized or malformed bodies,
+    configuration checks, index use, and pagination limits.
 
-Test coverage is useful evidence, not a guarantee that every possible
-security issue has been eliminated.
+What is and is not covered, and why, is in
+[`docs/testing-and-coverage.md`](docs/testing-and-coverage.md). Test coverage
+is useful evidence, not a guarantee that every possible security issue has
+been eliminated.
 
 ## API endpoints
 
@@ -143,9 +152,10 @@ cannot change status directly. Submit status changes through
 `POST /api/incidents/:id/updates` so they are recorded in the history.
 
 An analyst may also **claim** an unassigned incident by sending `PATCH { "assigned_to": <own id> }`. Nothing else can be changed in that request.
-See [`docs/api-spec.md`](docs/api-spec.md) for details and
-[`requests.http`](requests.http) for sample requests (VS Code REST
-Client).
+See [`docs/openapi.yaml`](docs/openapi.yaml) (OpenAPI 3, viewable at
+https://editor.swagger.io), [`docs/api-spec.md`](docs/api-spec.md) for
+details, and [`requests.http`](requests.http) for sample requests (VS Code
+REST Client).
 
 ### Error format
 
@@ -162,7 +172,9 @@ Errors use a consistent structure:
 
 Common codes: `400` invalid input or ID; `401` missing/invalid
 authentication; `403` not permitted; `404` not found; `409` conflict
-such as duplicate email or invalid status transition.
+such as duplicate email or invalid status transition; `413` body over
+100 kB; `429` too many login or sign-up attempts (with a `Retry-After`
+header).
 
 ## Example workflow
 
@@ -254,6 +266,8 @@ in one transaction.
 
 ## Security decisions and limitations
 
+Full notes: [`docs/security-and-performance.md`](docs/security-and-performance.md).
+
 -   Passwords are stored as bcrypt hashes using `bcryptjs`.
 -   `JWT_SECRET` is required; there is no default secret.
 -   Tokens use HS256, are verified with the expected algorithm, and
@@ -261,18 +275,27 @@ in one transaction.
 -   The authenticated user and current role are re-read from the
     database on each request.
 -   Unknown request fields, including privileged fields such as `role`
-    and `created_by`, are rejected.
+    and `created_by`, are rejected. All input is validated with Zod and
+    all SQL uses bound parameters.
 -   Unknown-email and incorrect-password login failures return the same
     status and error.
+-   **Rate limiting:** login (failed attempts) and sign-up (all attempts)
+    are limited per IP address, 10 per 15 minutes by default, then `429`.
+    Set `TRUST_PROXY=1` when running behind a host's proxy. The counters
+    are in memory, so they reset on restart and are per server instance.
+-   **CORS:** only the exact origins in `CORS_ORIGINS` are allowed; the
+    default is none, and `*` is refused at startup.
+-   **Headers:** `helmet` security headers; `X-Powered-By` is removed.
 -   There is no logout endpoint or token-revocation list. A stolen token
     can be used until expiry, unless current database checks invalidate
     the user.
 -   **Team-wide read access:** any authenticated user can read all
     incidents and their histories. This is intentional for shared SOC
     shift handovers; per-incident confidentiality is not implemented.
--   **Rate limiting and CORS:** not implemented yet; planned for Week 3.
 -   **User administration:** there is no API for changing roles. The
     admin account is created by the seed script.
+-   **Not implemented:** account lockout, password reset, email
+    verification, and multi-factor authentication.
 -   **Deployment:** not currently deployed.
 
 ## SQLite and deployment
@@ -287,22 +310,29 @@ record, redeploy, and confirm that the record survives. If persistent
 storage is unavailable, describe the deployment as a disposable demo and
 keep the local run guide as the dependable evaluation path. Verify
 current provider documentation before choosing a host because plans and
-storage policies change.
+storage policies change. A `Dockerfile` is included (data in a `/data` volume);
+see [`docs/setup-guide.md`](docs/setup-guide.md) for the steps and for what has
+and has not been verified.
 
 ## Project documentation
 
 -   [`docs/`](docs) --- planning and technical documents
 -   [`docs/api-spec.md`](docs/api-spec.md) --- endpoint specification
+-   [`docs/openapi.yaml`](docs/openapi.yaml) --- OpenAPI 3 file
+-   [`docs/setup-guide.md`](docs/setup-guide.md) --- setup, settings, Docker, deployment checklist
+-   [`docs/testing-and-coverage.md`](docs/testing-and-coverage.md) --- coverage note
+-   [`docs/security-and-performance.md`](docs/security-and-performance.md) --- security and performance notes
 -   [`docs/issue-log.md`](docs/issue-log.md) --- issue log
 -   [`requests.http`](requests.http) --- sample requests
 
-## Known limitations (Week 2)
+## Known limitations (Week 3)
 
 - **Team-wide read access.** Any logged-in user can read every incident and its history. This is deliberate: a small SOC team needs shared visibility for shift handover. There is no per-incident confidentiality. If one were needed (for example an HR or insider-threat case), the next step would be a `confidential` flag limiting reads to the creator, assignee and admins.
-- **No rate limiting and no CORS policy yet** (planned for Week 3), so login can currently be tried repeatedly.
+- **Rate limiting is in memory and per server instance.** It resets on restart, and users behind one shared IP share a counter. There is no account lockout.
 - **Tokens cannot be revoked before they expire.** There is no logout or refresh token; they simply expire after 1 hour.
 - **No user management API.** Roles cannot be changed through the API, and an admin account only comes from the seed script.
-- **Not deployed.** Run it locally using the steps above.
+- **Filtered list queries** (for example by status) use their own index but still sort; a composite index would help if they become slow (see the performance notes).
+- **Not deployed.** Run it locally or with Docker using [`docs/setup-guide.md`](docs/setup-guide.md). The Docker image has not been built on the development machine yet.
 - **SQLite needs a persistent disk** when hosted (see "SQLite and deployment" above).
 
 ## Notes

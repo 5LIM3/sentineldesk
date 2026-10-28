@@ -11,6 +11,12 @@ Error format everywhere: `{ "error": { "code": "...", "message": "...", "details
 - The creator of an incident and the author of an update are **the logged-in user**. Sending `created_by` or `author_id` is rejected with 400.
 - `401` means "not logged in" (missing, malformed, invalid or expired token). `403` means "logged in, not allowed".
 
+## Cross-origin and rate limits
+
+- Browsers may call the API only from origins listed in `CORS_ORIGINS` (none by default).
+- `POST /api/auth/login` (failed attempts) and `POST /api/auth/register` (all attempts) are limited per IP address (10 per 15 minutes by default), then return `429`.
+- A machine-readable version of this spec is in `docs/openapi.yaml`.
+
 ## Who may do what
 
 | Action | Allowed |
@@ -97,6 +103,7 @@ A note-only update omits `new_status`; both status fields come back `null`.
 | 409 | EMAIL_TAKEN | An account with that email exists (any letter case) |
 | 409 | INVALID_STATUS_TRANSITION | Move not allowed from the current status (`details` has `from`, `to`, `allowed`) |
 | 413 | PAYLOAD_TOO_LARGE | Body over 100 kB |
+| 429 | TOO_MANY_REQUESTS | Too many failed logins (or sign-ups) from one IP address in the window. A `Retry-After` header says how long to wait |
 | 500 | INTERNAL_ERROR | Unexpected error; generic message only |
 
 List response shape: `{ "data": [...], "pagination": { "page", "limit", "total", "totalPages" } }`

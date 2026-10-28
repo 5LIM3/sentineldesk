@@ -1,0 +1,415 @@
+openapi: 3.0.3
+info:
+  title: SentinelDesk API
+  version: 1.0.0
+  description: |
+    Security incident management for SOC teams: incidents, owners, investigation history and
+    controlled status changes.
+
+    **Authentication:** call `POST /api/auth/login`, then send `Authorization: Bearer <token>` on every
+    `/api/incidents` and `/api/auth/me` request. Tokens expire after 1 hour.
+
+    **Who may do what:** any logged-in user can read. Admin, the incident's creator or its assignee can
+    update an incident or add history. Any analyst can claim an unassigned incident for themselves.
+    Only admins can delete.
+
+    **Errors** always use `{ "error": { "code", "message", "details"? } }`.
+
+    **Rate limiting:** `POST /api/auth/login` (failed attempts) and `POST /api/auth/register` (all attempts)
+    are limited per IP address; over the limit returns `429` with a `Retry-After` header.
+servers:
+  - url: http://localhost:3000
+    description: Local development
+tags:
+  - name: Health
+  - name: Auth
+  - name: Incidents
+  - name: History
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Liveness check
+      security: []
+      responses:
+        "200":
+          description: The server is running
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+  /api/auth/register:
+    post:
+      tags: [Auth]
+      summary: Create an account (always an analyst)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegisterRequest" }
+      responses:
+        "201":
+          description: Account created. The password hash is never returned
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "409":
+          description: An account with this email already exists (any letter case)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { error: { code: EMAIL_TAKEN, message: An account with this email already exists } }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+  /api/auth/login:
+    post:
+      tags: [Auth]
+      summary: Log in and get a token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+      responses:
+        "200":
+          description: Logged in
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LoginResponse" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401":
+          description: Wrong email or password (the same answer for both, so accounts cannot be guessed)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { error: { code: INVALID_CREDENTIALS, message: Invalid email or password } }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+  /api/auth/me:
+    get:
+      tags: [Auth]
+      summary: The logged-in user
+      responses:
+        "200":
+          description: The current user
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/incidents:
+    post:
+      tags: [Incidents]
+      summary: Create an incident (the creator is the logged-in user)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateIncident" }
+      responses:
+        "201":
+          description: Created. Starts as `open`
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Incident" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    get:
+      tags: [Incidents]
+      summary: List incidents, newest first
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/Status" }
+        - name: severity
+          in: query
+          schema: { $ref: "#/components/schemas/Severity" }
+        - name: assigned_to
+          in: query
+          schema: { type: integer, minimum: 1 }
+        - $ref: "#/components/parameters/Page"
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+      responses:
+        "200":
+          description: A page of incidents
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/Incident" }
+                  pagination: { $ref: "#/components/schemas/Pagination" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/incidents/{id}:
+    parameters:
+      - $ref: "#/components/parameters/IncidentId"
+    get:
+      tags: [Incidents]
+      summary: One incident
+      responses:
+        "200":
+          description: The incident
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Incident" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [Incidents]
+      summary: Update fields (not status)
+      description: |
+        Allowed for an admin, the creator or the assignee. As a special case, any analyst may send exactly
+        `{ "assigned_to": <their own id> }` to claim an unassigned incident. `status` is rejected with
+        `STATUS_VIA_UPDATES`: change status through the history endpoint.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateIncident" }
+      responses:
+        "200":
+          description: The updated incident
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Incident" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Incidents]
+      summary: Delete an incident and, by cascade, its history (admin only)
+      responses:
+        "204": { description: Deleted }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/incidents/{id}/updates:
+    parameters:
+      - $ref: "#/components/parameters/IncidentId"
+    post:
+      tags: [History]
+      summary: Add an investigation note, optionally changing the status
+      description: |
+        Allowed for an admin, the creator or the assignee. The author is the logged-in user. With
+        `new_status`, the history row and the incident's status are saved in one transaction; a move that is
+        not allowed from the current status returns `409` and changes nothing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateUpdate" }
+      responses:
+        "201":
+          description: Recorded. `previous_status` is filled in by the server
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IncidentUpdate" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Status move not allowed from the current status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example:
+                error:
+                  code: INVALID_STATUS_TRANSITION
+                  message: "Cannot move incident 5 from 'open' to 'resolved'. Allowed: investigating, closed."
+                  details: { from: open, to: resolved, allowed: [investigating, closed] }
+    get:
+      tags: [History]
+      summary: Investigation history, oldest first
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        "200":
+          description: A page of history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/IncidentUpdate" }
+                  pagination: { $ref: "#/components/schemas/Pagination" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    IncidentId:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer, minimum: 1 }
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+  responses:
+    ValidationError:
+      description: "Input failed validation. Also used for unexpected fields, a bad id, bad JSON, STATUS_VIA_UPDATES and INVALID_REFERENCE"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example:
+            error:
+              code: VALIDATION_ERROR
+              message: Request validation failed
+              details: [{ path: title, message: "Too small: expected string to have >=3 characters" }]
+    Unauthorized:
+      description: Not logged in (`UNAUTHENTICATED`, `INVALID_TOKEN` or `TOKEN_EXPIRED`)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: { code: UNAUTHENTICATED, message: "Log in first and send 'Authorization: Bearer <token>'" } }
+    Forbidden:
+      description: Logged in but not allowed
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: { code: FORBIDDEN, message: This action needs the admin role } }
+    NotFound:
+      description: No such incident
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: { code: INCIDENT_NOT_FOUND, message: Incident 999 not found } }
+    TooManyRequests:
+      description: Rate limit reached for this IP address
+      headers:
+        Retry-After:
+          description: Seconds to wait
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: { code: TOO_MANY_REQUESTS, message: Too many attempts. Wait a while and try again. } }
+  schemas:
+    Severity:
+      type: string
+      enum: [low, medium, high, critical]
+    Status:
+      type: string
+      enum: [open, investigating, contained, resolved, closed]
+      description: |
+        Allowed moves: open to investigating or closed; investigating to contained, resolved or closed;
+        contained to investigating or resolved; resolved to closed or investigating; closed is final.
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details: {}
+    Pagination:
+      type: object
+      properties:
+        page: { type: integer }
+        limit: { type: integer }
+        total: { type: integer }
+        totalPages: { type: integer }
+    User:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        email: { type: string, format: email }
+        role: { type: string, enum: [analyst, admin] }
+        created_at: { type: string, format: date-time }
+    RegisterRequest:
+      type: object
+      additionalProperties: false
+      required: [name, email, password]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        email: { type: string, format: email, maxLength: 254 }
+        password: { type: string, minLength: 8, description: At most 72 bytes (bcrypt limit) }
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, minLength: 1, maxLength: 200 }
+    LoginResponse:
+      type: object
+      properties:
+        token: { type: string }
+        token_type: { type: string, example: Bearer }
+        expires_in: { type: string, example: 1h }
+        user: { $ref: "#/components/schemas/User" }
+    Incident:
+      type: object
+      properties:
+        id: { type: integer }
+        title: { type: string }
+        description: { type: string }
+        severity: { $ref: "#/components/schemas/Severity" }
+        status: { $ref: "#/components/schemas/Status" }
+        created_by: { type: integer }
+        assigned_to: { type: integer, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    CreateIncident:
+      type: object
+      additionalProperties: false
+      required: [title, description, severity]
+      properties:
+        title: { type: string, minLength: 3, maxLength: 120 }
+        description: { type: string, minLength: 1, maxLength: 5000 }
+        severity: { $ref: "#/components/schemas/Severity" }
+        assigned_to: { type: integer, minimum: 1, nullable: true }
+    UpdateIncident:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        title: { type: string, minLength: 3, maxLength: 120 }
+        description: { type: string, minLength: 1, maxLength: 5000 }
+        severity: { $ref: "#/components/schemas/Severity" }
+        assigned_to: { type: integer, minimum: 1, nullable: true }
+    CreateUpdate:
+      type: object
+      additionalProperties: false
+      required: [note]
+      properties:
+        note: { type: string, minLength: 1, maxLength: 5000 }
+        new_status: { $ref: "#/components/schemas/Status" }
+    IncidentUpdate:
+      type: object
+      properties:
+        id: { type: integer }
+        incident_id: { type: integer }
+        author_id: { type: integer }
+        note: { type: string }
+        previous_status: { allOf: [{ $ref: "#/components/schemas/Status" }], nullable: true }
+        new_status: { allOf: [{ $ref: "#/components/schemas/Status" }], nullable: true }
+        created_at: { type: string, format: date-time }
