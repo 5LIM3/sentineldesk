@@ -11,6 +11,9 @@ export const testConfig: AppConfig = {
   jwtSecret: "test-secret-for-jest-only-".repeat(2),
   jwtExpiresIn: "1h",
   bcryptRounds: 4, // fastest allowed: tests do not need slow hashing
+  corsOrigins: [], // no cross-origin access, like the real default
+  authRateLimit: { windowMs: 60_000, max: 1000 }, // high, so only the rate-limit tests ever hit it
+  trustProxy: 0,
 };
 
 /**
@@ -18,7 +21,8 @@ export const testConfig: AppConfig = {
  * id 1 admin, id 2 analyst A, id 3 analyst B, id 4 analyst C (an outsider in permission tests).
  * `t.admin`, `t.a`, `t.b`, `t.c` are ready-made Authorization headers: `.set(t.a)`.
  */
-export function makeTestApp() {
+export function makeTestApp(overrides: Partial<AppConfig> = {}) {
+  const config: AppConfig = { ...testConfig, ...overrides };
   jest.spyOn(console, "log").mockImplementation(() => undefined); // silence "Applied migration"
   const db: DB = openDb(":memory:");
   migrate(db);
@@ -39,7 +43,7 @@ export function makeTestApp() {
     b: header(3, "analyst"),
     c: header(4, "analyst"),
   };
-  return { db, app: createApp(db, testConfig), t };
+  return { db, app: createApp(db, config), t };
 }
 
 export const newIncident = (overrides: Record<string, unknown> = {}) => ({
