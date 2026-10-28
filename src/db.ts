@@ -75,6 +75,13 @@ const migrations: { id: number; name: string; sql: string }[] = [
       CREATE INDEX idx_updates_incident ON incident_updates(incident_id, id);
     `,
   },
+  {
+    id: 2,
+    name: "list_order_index",
+    // The list endpoint sorts newest first (ORDER BY created_at DESC, id DESC) with LIMIT/OFFSET.
+    // This index lets SQLite read rows already in that order instead of sorting the whole table.
+    sql: `CREATE INDEX idx_incidents_created_at ON incidents(created_at DESC, id DESC);`,
+  },
 ];
 
 export function migrate(db: DB): void {
