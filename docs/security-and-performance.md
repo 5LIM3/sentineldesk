@@ -26,8 +26,10 @@
 - **No account lockout, password reset, email verification or multi-factor sign-in.**
 - **Team-wide read access** is deliberate (shift handover) but means any logged-in user sees every incident.
 - **Not deployed**, so HTTPS and hosting settings are untested. Serve it over HTTPS in production.
-- **Dependencies:** `npm audit` reports moderate advisories in Jest's dev tooling only; none in production packages.
-  Re-check before deploying.
+- **Dependencies:** an audit found a high-severity `body-parser` advisory and a moderate `qs` advisory inside
+  Express's dependencies. Both were fixed with a lockfile-only `npm audit fix`, and `npm audit --omit=dev` now reports
+  0. Five low advisories remain in the Jest test tooling (development only). New advisories appear constantly, so run
+  `npm audit --omit=dev` again before every deploy (details in `docs/testing-and-coverage.md`).
 
 ## Performance
 

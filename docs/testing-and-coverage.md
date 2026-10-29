@@ -12,13 +12,17 @@ never touch `data/` and never need a `.env` file. Nothing is shared between test
 
 ## Result
 
-**108 tests in 5 files, all passing.** Coverage at the `week-3` tag:
+**108 tests in 5 files, all passing on both machines used.** Coverage, measured on each:
 
-| Measure | Result |
-|---|---|
-| Statements | 98.73% (701 of 710) |
-| Branches | 94.63% (141 of 149) |
-| Functions | 100% (24 of 24) |
+| Measure | Linux, Node 22 | Windows, Node 24 |
+|---|---|---|
+| Statements | 98.73% (701 of 710) | 98.73% (701 of 710) |
+| Branches | 94.63% (141 of 149) | 94.59% (140 of 148) |
+| Functions | 100% (24 of 24) | 100% (23 of 23) |
+
+The two reports differ by one branch and one function. Coverage counts come from the V8 engine, and the exact
+number of branches and functions it reports varies slightly between Node versions and platforms. The tests and
+the code are the same, and the results (108 passing) are identical.
 
 ## What is tested
 
@@ -63,5 +67,17 @@ ownership check, allowing every CORS origin, removing the login rate limit, coun
 the security headers and removing the list index each made tests fail. The Windows machine used for development
 also passes all tests.
 
-Dependency advisories: `npm audit` reports moderate advisories inside the Jest tooling (dev dependencies only).
-Production dependencies report none.
+## Dependency advisories (`npm audit`)
+
+Checked with `npm audit` (everything) and `npm audit --omit=dev` (what actually runs in production):
+
+- **Production dependencies** had 2 advisories, both inside Express's own dependencies: `body-parser` (high,
+  denial of service through extra bytes after a compressed request body) and `qs` (moderate, in `qs.stringify`,
+  which this API does not use). Fixed with `npm audit fix`, which only updated the lockfile (`body-parser`
+  2.3.0 to 2.4.0, `qs` 6.16.0 to 6.17.1) without changing any code or version ranges. The production audit now
+  reports **0 vulnerabilities** and all 108 tests still pass.
+- **5 low-severity advisories remain**, all in the Jest test tooling (`jest` and its parts, through
+  `deepmerge`). They are development tools only and are not installed in production. The only offered fix is
+  `npm audit fix --force`, which would install a breaking Jest version, so it was deliberately not run.
+- New advisories appear over time, so these results are a snapshot. Run both audits again before deploying.
+
